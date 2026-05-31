@@ -1,4 +1,32 @@
-import React, { useState, useRef } from 'react';
+// REPARATION DU BUG PROTOCOL GETTER POUR REACT NATIVE 0.85+
+if (typeof global.URL === 'function') {
+  const OriginalURL = global.URL;
+  global.URL = function(url, base) {
+    const instance = new OriginalURL(url, base);
+    // Force la réécriture de la propriété protocole demandée par Supabase
+    Object.defineProperty(instance, 'protocol', {
+      value: instance.protocol,
+      writable: true,
+      configurable: true
+    });
+    return instance;
+  };
+  global.URL.prototype = OriginalURL.prototype;
+}
+import { createClient } from '@supabase/supabase-js';
+
+const SUPABASE_URL = 'https://supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1od29vbmVmdGxsdnhrbW9zaGpiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MDcwNzUsImV4cCI6MjA5NTI4MzA3NX0.LK3KeqcrYEJP9DZi4xfrvNUKlvXOD5PvFY15oG1bO_0';
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    persistSession: false, // Évite les conflits d'écriture de jetons sous Android pur
+    autoRefreshToken: false,
+    detectSessionInUrl: false
+  }
+});
+
+import React, { useState, useRef, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -15,6 +43,8 @@ import {
   Image,
   PermissionsAndroid,
   Platform,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
 } from 'react-native';
 import Video from 'react-native-video';
 import Icon from 'react-native-vector-icons/Ionicons';
@@ -22,27 +52,55 @@ import MCIcon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { launchImageLibrary } from 'react-native-image-picker';
 import Share from 'react-native-share';
 import { CameraRoll } from '@react-native-camera-roll/camera-roll';
-import { supabase } from './supabaseClient';
+import { createClient } from '@supabase/supabase-js';
+
+const SUPABASE_URL = 'https://supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1od29vbmVmdGxsdnhrbW9zaGpiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MDcwNzUsImV4cCI6MjA5NTI4MzA3NX0.LK3KeqcrYEJP9DZi4xfrvNUKlvXOD5PvFY15oG1bO_0';
+
+// Initialisation directe dans le fichier pour couper court au bug d'import
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// Types
+type Clip = { id: string; title: string; duration: number };
+type Template = {
+  id: string;
+  title?: string;
+  description?: string;
+  thumbnail_url?: string;
+  video_url?: string;
+  duration?: number;
+};
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const CENTER_PADDING = SCREEN_WIDTH / 2;
 
 export default function App() {
-  const videoRef = useRef(null);
+  const videoRef = useRef<any>(null);
 
-  const [currentTime, setCurrentTime] = useState(0);
-  const [clips, setClips] = useState([]);
-  const [selectedVideoUri, setSelectedVideoUri] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
-  const [isExporting, setIsExporting] = useState(false);
-  const [videoText, setVideoText] = useState('');
-  const [isTextModalVisible, setIsTextModalVisible] = useState(false);
-  const [inputText, setInputText] = useState('');
-  const [activeFilter, setActiveFilter] = useState('none');
-  const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
-  const [isTemplateModalVisible, setIsTemplateModalVisible] = useState(false);
-  const [templates, setTemplates] = useState([]);
-  const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
+  const [currentTime, setCurrentTime] = useState<number>(0);
+  const [clips, setClips] = useState<Clip[]>([]);
+  const [selectedVideoUri, setSelectedVideoUri] = useState<string>('');
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+  const [isExporting, setIsExporting] = useState<boolean>(false);
+  const [videoText, setVideoText] = useState<string>('');
+  const [isTextModalVisible, setIsTextModalVisible] = useState<boolean>(false);
+  const [inputText, setInputText] = useState<string>('');
+  const [activeFilter, setActiveFilter] = useState<string>('none');
+  const [activeTab, setActiveTab] = useState<string>('Éditer');
+  const [activeCategory, setActiveCategory] = useState<string>('all');
+  // ÉTAT POUR LA RECHERCHE DE MODÈLES
+  const [searchQuery, setSearchQuery] = useState('');
+  // ÉTATS POUR LE LABO D'IA
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [isGeneratingAI, setIsGeneratingAI] = useState(false);
+  const [isFilterModalVisible, setIsFilterModalVisible] = useState<boolean>(false);
+  const [isTemplateModalVisible, setIsTemplateModalVisible] = useState<boolean>(false);
+  const [userProjects, setUserProjects] = useState<any[]>([]);
+  const [isLoadingProjects, setIsLoadingProjects] = useState<boolean>(false);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [isLoadingTemplates, setIsLoadingTemplates] = useState<boolean>(false);
+  const [selectedTemplateForView, setSelectedTemplateForView] = useState<Template | null>(null);
+  const [isFullscreenPlayerVisible, setIsFullscreenPlayerVisible] = useState<boolean>(false);
 
   // ── VIDEO PLAYER STATES ──
   const [isPlaying, setIsPlaying] = useState(false);
@@ -53,7 +111,7 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   // ── SCROLL TIMELINE ──
-  const handleScroll = (event) => {
+  const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const scrollX = event.nativeEvent.contentOffset.x;
     const calculatedTime = scrollX / 20;
     setCurrentTime(parseFloat(calculatedTime.toFixed(1)));
@@ -71,7 +129,7 @@ export default function App() {
       const durationSec = videoAsset.duration
         ? parseFloat(videoAsset.duration.toFixed(1))
         : 0;
-      setSelectedVideoUri(videoAsset.uri);
+      setSelectedVideoUri(videoAsset.uri || '');
       setClips([{ id: '1', title: 'Clip 1', duration: durationSec }]);
       setCurrentTime(0);
       setIsPlaying(false);
@@ -80,12 +138,12 @@ export default function App() {
   };
 
   // ── VIDEO PLAYER EVENTS ──
-  const handleVideoLoad = (data) => {
+  const handleVideoLoad = (data: any) => {
     setVideoDuration(data.duration);
     setIsVideoLoading(false);
   };
 
-  const handleVideoProgress = (data) => {
+  const handleVideoProgress = (data: any) => {
     setVideoProgress(data.currentTime);
     setCurrentTime(parseFloat(data.currentTime.toFixed(1)));
   };
@@ -96,7 +154,7 @@ export default function App() {
     videoRef.current?.seek(0);
   };
 
-  const handleVideoError = (error) => {
+  const handleVideoError = (error: any) => {
     setIsVideoLoading(false);
     Alert.alert('Video error', 'Could not play this video.');
   };
@@ -105,13 +163,13 @@ export default function App() {
     setIsPlaying((prev) => !prev);
   };
 
-  const handleSeek = (seconds) => {
+  const handleSeek = (seconds: number) => {
     const newTime = Math.max(0, Math.min(videoProgress + seconds, videoDuration));
-    videoRef.current?.seek(newTime);
+    videoRef.current?.seek?.(newTime);
     setVideoProgress(newTime);
   };
 
-  const formatTime = (seconds) => {
+  const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
     return `${m}:${s < 10 ? '0' : ''}${s}`;
@@ -127,7 +185,7 @@ export default function App() {
     }
     let timeAccumulator = 0;
     let clipToSplitIndex = -1;
-    for (let i = 0; i < clips.length; i += 1) {
+      for (let i = 0; i < clips.length; i += 1) {
       timeAccumulator += clips[i].duration;
       if (currentTime <= timeAccumulator) {
         clipToSplitIndex = i;
@@ -139,12 +197,12 @@ export default function App() {
       const previousClipsDuration = timeAccumulator - targetClip.duration;
       const splitPointInClip = currentTime - previousClipsDuration;
       if (splitPointInClip > 0.2 && splitPointInClip < targetClip.duration - 0.2) {
-        const firstPart = {
+        const firstPart: Clip = {
           id: `${Date.now()}-a`,
           title: `${targetClip.title} (A)`,
           duration: parseFloat(splitPointInClip.toFixed(1)),
         };
-        const secondPart = {
+        const secondPart: Clip = {
           id: `${Date.now()}-b`,
           title: `${targetClip.title} (B)`,
           duration: parseFloat((targetClip.duration - splitPointInClip).toFixed(1)),
@@ -199,7 +257,7 @@ export default function App() {
     }
   };
 
-  const confirmDeleteClip = (clipId, clipTitle) => {
+  const confirmDeleteClip = (clipId: string, clipTitle: string) => {
     Alert.alert(
       'Delete clip',
       `Delete ${clipTitle} from the timeline?`,
@@ -215,29 +273,162 @@ export default function App() {
   };
 
   // ── LOAD TEMPLATES ──
-  const loadTemplates = async () => {
+  const loadTemplates = async (category: string = 'Vie quotidienne') => {
     setIsLoadingTemplates(true);
     try {
-      const { data, error } = await supabase
+      // Sécurité : si supabase n'est pas encore prêt, on force le mode secours directement
+      if (!supabase) {
+        throw new Error('Supabase client local introuvable');
+      }
+
+      let query = supabase
         .from('templates')
-        .select('id, title, description, thumbnail_url, video_url, duration')
-        .order('created_at', { ascending: false });
+        .select('id, title, description, thumbnail_url, video_url, duration, category');
+
+      if (category !== 'all') {
+        query = query.eq('category', category);
+      }
+
+      const { data, error } = await query;
       if (error) throw error;
-      setTemplates(data || []);
-    } catch (err) {
+      setTemplates((data as Template[]) || []);
+    } catch (err: any) {
       Alert.alert('Error', 'Could not load templates: ' + (err.message || 'Unknown error'));
     } finally {
       setIsLoadingTemplates(false);
     }
   };
 
+  const handleSearchTemplates = async (text: string) => {
+    setSearchQuery(text);
+    setIsLoadingTemplates(true);
+    
+    try {
+      let query = supabase
+        .from('templates')
+        .select('id, title, description, thumbnail_url, video_url, duration, category')
+        .ilike('title', `%${text}%`);
+
+      if (activeCategory !== 'Trending' && activeCategory !== 'Premium' && activeCategory !== 'Suivis') {
+        query = query.eq('category', activeCategory);
+      }
+
+      const { data, error } = await query.order('created_at', { ascending: false });
+      if (error) throw error;
+      setTemplates((data as Template[]) || []);
+    } catch (err: any) {
+      console.log('Erreur recherche Supabase, filtrage local de secours activé');
+      
+      if (!text.trim()) {
+        loadTemplates(activeCategory);
+        return;
+      }
+      
+      setTemplates((prevTemplates) => 
+        prevTemplates.filter((template) => 
+          template.title?.toLowerCase().includes(text.toLowerCase())
+        )
+      );
+    } finally {
+      setIsLoadingTemplates(false);
+    }
+  };
+
+  const loadUserProjects = async () => {
+    setIsLoadingProjects(true);
+    try {
+      const { data, error } = await supabase
+        .from('projects')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setUserProjects(data || []);
+    } catch (err: any) {
+      console.log('Erreur de chargement des projets cloud : ', err.message);
+    } finally {
+      setIsLoadingProjects(false);
+    }
+  };
+
+  const handleLoadProject = (project: any) => {
+    const data = project.timeline_data;
+    if (data) {
+      setSelectedVideoUri(data.video_uri || '');
+      setVideoText(data.applied_text || '');
+      setActiveFilter(data.applied_filter || 'none');
+      setCurrentTime(data.last_pointer_position || 0);
+      
+      const clipsCount = data.video_clips_count || 1;
+      const durationEach = (data.video_duration || 15.0) / clipsCount;
+      const reconstructedClips = Array.from({ length: clipsCount }, (_, i) => ({
+        id: `cloud-${project.id}-${i}`,
+        title: clipsCount > 1 ? `Clip 1 (${String.fromCharCode(65 + i)})` : `Clip 1`,
+        duration: parseFloat(durationEach.toFixed(1))
+      }));
+      setClips(reconstructedClips);
+      setActiveTab('Éditer');
+      Alert.alert('Projet restauré ! 📂', 'Votre session de montage a été récupérée depuis le Cloud.');
+    }
+  };
+
+  const handleDeleteProjectFromCloud = async (projectId: any) => {
+    Alert.alert('Supprimer le projet 🗑️', 'Voulez-vous effacer définitivement ce brouillon de Supabase ?', [
+      { text: 'Annuler', style: 'cancel' },
+      {
+        text: 'Supprimer',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            const { error } = await supabase.from('projects').delete().eq('id', projectId);
+            if (error) throw error;
+            setUserProjects((prev: any[]) => prev.filter((p: any) => p.id !== projectId));
+            Alert.alert('Supprimé', 'Le projet a été retiré de votre espace cloud.');
+          } catch (err: any) {
+            Alert.alert('Erreur', err.message || 'Erreur inconnue');
+          }
+        }
+      }
+    ]);
+  };
+
+  useEffect(() => {
+    if (activeTab === 'Projets') {
+      loadUserProjects();
+    }
+  }, [activeTab]);
+
+  const handleGenerateAIContent = () => {
+    if (!aiPrompt.trim()) {
+      Alert.alert('Champ vide ⚠️', 'Veuillez décrire ce que vous souhaitez générer.');
+      return;
+    }
+    
+    setIsGeneratingAI(true);
+    
+    // Simulation du temps de calcul de l'Intelligence Artificielle
+    setTimeout(() => {
+      setIsGeneratingAI(false);
+      setAiPrompt('');
+      Alert.alert(
+        'Génération réussie ! 🪄', 
+        'Votre contenu généré par l\'IA est prêt et a été ajouté à vos fichiers locaux.'
+      );
+    }, 2500);
+  };
+
   const openTemplateModal = () => {
     setIsTemplateModalVisible(true);
-    loadTemplates();
+    loadTemplates(activeCategory);
+  };
+
+  const openFullscreenTemplate = (template: Template) => {
+    setSelectedTemplateForView(template);
+    setIsFullscreenPlayerVisible(true);
   };
 
   // ── USE TEMPLATE ──
-  const handleUseTemplate = (template) => {
+  const handleUseTemplate = (template: Template) => {
     Alert.alert(
       'Use this template',
       `Load "${template.title}" into your timeline?`,
@@ -246,10 +437,10 @@ export default function App() {
         {
           text: 'Use template',
           onPress: () => {
-            setSelectedVideoUri(template.video_url);
+            setSelectedVideoUri(template.video_url || '');
             setClips([{
               id: `template-${template.id}`,
-              title: template.title,
+              title: template.title || 'Template',
               duration: template.duration || 10,
             }]);
             setCurrentTime(0);
@@ -292,33 +483,37 @@ export default function App() {
   };
 
   const handleSaveToGallery = async () => {
+    if (!selectedVideoUri) return;
     setIsExporting(true);
     try {
       const hasPermission = await requestStoragePermission();
       if (!hasPermission) {
-        Alert.alert('Permission required', 'Please allow storage access.');
+        Alert.alert('Permission requise ❌', "L'accès à la galerie est nécessaire.");
         return;
       }
-      await CameraRoll.save(selectedVideoUri, { type: 'video' });
-      Alert.alert('Saved!', 'Your video has been saved to your gallery.');
+      await CameraRoll.save(selectedVideoUri, { type: 'video', album: 'CapCut Clone' });
+      Alert.alert('Succès ! 🎉', 'Vidéo enregistrée directement dans votre galerie Android.');
     } catch (err) {
-      Alert.alert('Error', 'Could not save video: ' + (err.message || 'Unknown error'));
+      const e: any = err;
+      Alert.alert('Erreur ❌', 'Impossible d\'enregistrer le fichier : ' + (e.message || 'Unknown error'));
     } finally {
       setIsExporting(false);
     }
   };
 
   const handleShareVideo = async () => {
+    if (!selectedVideoUri) return;
     setIsExporting(true);
     try {
       await Share.open({
         url: selectedVideoUri,
         type: 'video/mp4',
-        title: 'Share your video',
+        title: 'Partager votre montage CapCut',
       });
     } catch (err) {
-      if (err.message !== 'User did not share') {
-        Alert.alert('Error', 'Could not share: ' + (err.message || 'Unknown error'));
+      const e: any = err;
+      if (e.message !== 'User did not share') {
+        Alert.alert('Erreur de partage ❌', e.message || 'Impossible de partager la vidéo.');
       }
     } finally {
       setIsExporting(false);
@@ -346,7 +541,8 @@ export default function App() {
       if (error) throw error;
       Alert.alert('Saved', 'The project was saved to Supabase.');
     } catch (err) {
-      Alert.alert('Cloud error', err.message || 'An error occurred.');
+      const e: any = err;
+      Alert.alert('Cloud error', e.message || 'An error occurred.');
     } finally {
       setIsSaving(false);
     }
@@ -357,7 +553,7 @@ export default function App() {
     setIsTextModalVisible(false);
   };
 
-  const applyFilter = (filterName) => {
+  const applyFilter = (filterName: string) => {
     setActiveFilter(filterName);
     setIsFilterModalVisible(false);
   };
@@ -575,7 +771,11 @@ export default function App() {
                 keyExtractor={(item) => item.id}
                 showsVerticalScrollIndicator={false}
                 renderItem={({ item }) => (
-                  <View style={styles.templateCard}>
+                  <TouchableOpacity
+                    style={styles.templateCard}
+                    activeOpacity={0.85}
+                    onPress={() => openFullscreenTemplate(item)}
+                  >
                     {item.thumbnail_url ? (
                       <Image source={{ uri: item.thumbnail_url }} style={styles.templateThumbnail} resizeMode="cover" />
                     ) : (
@@ -591,10 +791,324 @@ export default function App() {
                     <TouchableOpacity style={styles.useTemplateBtn} onPress={() => handleUseTemplate(item)}>
                       <Text style={styles.useTemplateBtnText}>Use</Text>
                     </TouchableOpacity>
-                  </View>
+                  </TouchableOpacity>
                 )}
               />
             )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* ONGLET 5 : PROFIL UTILISATEUR "MOI" (DESIGN EXACT CAPCUT) */}
+      {activeTab === 'Moi' && (
+        <View style={styles.profileContainer}>
+          {/* Section d'en-tête utilisateur */}
+          <View style={styles.profileHeader}>
+            <View style={styles.profileAvatarLarge}>
+              <Text style={styles.avatarLargeText}>U</Text>
+            </View>
+            <View style={styles.profileMeta}>
+              <Text style={styles.profileUsername}>CapCut_Creator_99</Text>
+              <Text style={styles.profileId}>ID : 482910472</Text>
+            </View>
+          </View>
+
+          {/* Section des statistiques */}
+          <View style={styles.statsCounterRow}>
+            <View style={styles.statBox}>
+              <Text style={styles.statCountNumber}>12</Text>
+              <Text style={styles.statCountLabel}>Modèles</Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statBox}>
+              <Text style={styles.statCountNumber}>3.4K</Text>
+              <Text style={styles.statCountLabel}>Abonnés</Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statBox}>
+              <Text style={styles.statCountNumber}>25.1K</Text>
+              <Text style={styles.statCountLabel}>Mentions J'aime</Text>
+            </View>
+          </View>
+
+          {/* Onglets de contenu (Modèles / Projets sauvegardés) */}
+          <View style={styles.profileContentTabs}>
+            <TouchableOpacity style={[styles.profileSubTab, { borderBottomColor: '#000', borderBottomWidth: 2 }]}>
+              <Text style={{ fontWeight: 'bold', color: '#000' }}>Mes créations</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Grille vide ou historique des projets */}
+          <ScrollView contentContainerStyle={styles.draftsScrollArea}>
+            {clips.length > 0 ? (
+              <View style={styles.draftCard}>
+                <Icon name="film-outline" size={24} color="#8E8E93" />
+                <Text style={styles.draftCardText}>Projet en cours : {clips.length} clip(s)</Text>
+                <Text style={styles.draftCardDuration}>{totalDuration}s</Text>
+              </View>
+            ) : (
+              <View style={styles.emptyDraftsState}>
+                <Icon name="folder-open-outline" size={48} color="#C7C7CC" />
+                <Text style={styles.emptyDraftsText}>Aucun modèle publié pour le moment.</Text>
+              </View>
+            )}
+          </ScrollView>
+        </View>
+      )}
+
+      {/* ONGLET 4 : GESTION DES PROJETS CLOUD */}
+      {activeTab === 'Projets' && (
+        <View style={styles.projectsContainer}>
+          <Text style={styles.projectsMainTitle}>Brouillons Cloud</Text>
+          
+          {isLoadingProjects ? (
+            <ActivityIndicator size="large" color="#000" style={{ marginTop: 40 }} />
+          ) : userProjects.length > 0 ? (
+            <ScrollView contentContainerStyle={styles.projectsScrollArea}>
+              {userProjects.map((project) => (
+                <View key={project.id} style={styles.projectCloudCard}>
+                  <View style={styles.projectIconFrame}>
+                    <Icon name="film" size={24} color="#007FFF" />
+                  </View>
+                  <View style={styles.projectInfoMeta}>
+                    <Text style={styles.projectTitleText}>{project.title}</Text>
+                    <Text style={styles.projectDateText}>
+                      Modifié le : {new Date(project.created_at).toLocaleDateString()}
+                    </Text>
+                  </View>
+                  <View style={styles.projectActionsRow}>
+                    <TouchableOpacity style={styles.loadProjectBtn} onPress={() => handleLoadProject(project)}>
+                      <Icon name="pencil" size={18} color="#fff" />
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.deleteProjectCloudBtn} onPress={() => handleDeleteProjectFromCloud(project.id)}>
+                      <Icon name="trash-outline" size={18} color="#EF4444" />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+          ) : (
+            <View style={styles.emptyProjectsState}>
+              <Icon name="cloud-offline-outline" size={54} color="#C7C7CC" />
+              <Text style={styles.emptyProjectsText}>Aucun brouillon enregistré sur votre compte.</Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* ONGLET 3 : LABO D'IA Workspace (DESIGN CLASSIQUE CAPCUT) */}
+      {activeTab === "Labo d'IA" && (
+        <ScrollView style={styles.aiContainer} contentContainerStyle={{ paddingBottom: 90 }}>
+          <Text style={styles.aiMainTitle}>Labo d'IA</Text>
+
+          {/* Bannière principale mise en avant */}
+          <View style={styles.aiHeroBanner}>
+            <View style={styles.aiHeroTextFrame}>
+              <Text style={styles.aiHeroTitle}>Texte en Image IA</Text>
+              <Text style={styles.aiHeroSubtitle}>Transformez vos mots en œuvres d'art uniques instantanément.</Text>
+            </View>
+            <View style={styles.aiHeroIconFrame}>
+              <MCIcon name="creation" size={40} color="#FFF" />
+            </View>
+          </View>
+
+          {/* Zone de Prompt interactive */}
+          <View style={styles.aiPromptCard}>
+            <TextInput
+              style={styles.aiTextInput}
+              placeholder="Décrivez ce que vous voulez créer (ex: Un astronaute qui fait du surf dans l'espace)..."
+              placeholderTextColor="#8E8E93"
+              multiline
+              value={aiPrompt}
+              onChangeText={setAiPrompt}
+            />
+            <TouchableOpacity 
+              style={styles.aiGenerateBtn} 
+              onPress={handleGenerateAIContent}
+              disabled={isGeneratingAI}
+            >
+              {isGeneratingAI ? (
+                <ActivityIndicator size="small" color="#000" />
+              ) : (
+                <>
+                  <Icon name="sparkles" size={16} color="#000" style={{ marginRight: 6 }} />
+                  <Text style={styles.aiGenerateBtnText}>Générer</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          {/* Grille des outils IA secondaires */}
+          <Text style={styles.aiSectionTitle}>Fonctionnalités populaires</Text>
+          <View style={styles.aiToolsGrid}>
+            <TouchableOpacity style={styles.aiToolGridCard} onPress={() => Alert.alert('Outil IA', 'Retouche de visage par IA activée.') }>
+              <Icon name="happy-outline" size={26} color="#A855F7" />
+              <Text style={styles.aiToolGridLabel}>Retouche Visage</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.aiToolGridCard} onPress={() => Alert.alert('Outil IA', 'Amélioration de la netteté photo activée.') }>
+              <Icon name="image-outline" size={26} color="#3B82F6" />
+              <Text style={styles.aiToolGridLabel}>Glow Up Photo</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.aiToolGridCard} onPress={() => Alert.alert('Outil IA', 'Générateur d\'autocollants personnalisés.') }>
+              <Icon name="color-palette-outline" size={26} color="#10B981" />
+              <Text style={styles.aiToolGridLabel}>Autocollants IA</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.aiToolGridCard} onPress={() => Alert.alert('Outil IA', 'Suppression automatique du fond vidéo.') }>
+              <Icon name="cut-outline" size={26} color="#EF4444" />
+              <Text style={styles.aiToolGridLabel}>Détourage Vidéo</Text>
+            </TouchableOpacity>
+          </View>
+        </ScrollView>
+      )}
+
+      {/* ONGLET 2 : MODÈLES CAPCUT */}
+      {activeTab === 'Modèles' && (
+        <View style={styles.templatesTabContainer}>
+          {/* Barre de recherche supérieure interactive */}
+          <View style={styles.searchBarRow}>
+            <View style={styles.searchField}>
+              <Icon name="search" size={18} color="#8E8E93" style={{ marginRight: 8 }} />
+              <TextInput
+                placeholder="Rechercher sur CapCut"
+                placeholderTextColor="#8E8E93"
+                style={styles.searchInput}
+                value={searchQuery}
+                onChangeText={handleSearchTemplates}
+                clearButtonMode="while-editing"
+              />
+              {searchQuery.length > 0 && (
+                <TouchableOpacity onPress={() => handleSearchTemplates('')}>
+                  <Icon name="close-circle" size={16} color="#8E8E93" />
+                </TouchableOpacity>
+              )}
+            </View>
+            <TouchableOpacity style={styles.autoCutBtn} onPress={() => Alert.alert('Décpg auto', 'Sélectionnez des clips pour générer un montage automatique.') }>
+              <MCIcon name="auto-fix" size={20} color="#000" />
+              <Text style={styles.autoCutText}>Décpg auto</Text>
+            </TouchableOpacity>
+          </View>
+
+          {isLoadingTemplates ? (
+            <ActivityIndicator size="large" color="#007FFF" style={{ marginTop: 30 }} />
+          ) : templates.length > 0 ? (
+            <ScrollView contentContainerStyle={{ paddingHorizontal: 15, paddingBottom: 120 }}>
+              {templates.map((item) => (
+                <TouchableOpacity
+                  key={item.id}
+                  style={styles.templateCard}
+                  activeOpacity={0.85}
+                  onPress={() => openFullscreenTemplate(item)}
+                >
+                  {item.thumbnail_url ? (
+                    <Image source={{ uri: item.thumbnail_url }} style={styles.templateThumbnail} resizeMode="cover" />
+                  ) : (
+                    <View style={[styles.templateThumbnail, styles.templateThumbnailPlaceholder]}>
+                      <Icon name="videocam-outline" size={28} color="#555" />
+                    </View>
+                  )}
+                  <View style={styles.templateInfo}>
+                    <Text style={styles.templateTitle} numberOfLines={1}>{item.title}</Text>
+                    <Text style={styles.templateDesc} numberOfLines={2}>{item.description || 'No description'}</Text>
+                    <Text style={styles.templateDuration}>{item.duration ? `${item.duration}s` : '—'}</Text>
+                  </View>
+                  <TouchableOpacity style={styles.useTemplateBtn} onPress={() => handleUseTemplate(item)}>
+                    <Text style={styles.useTemplateBtnText}>Use</Text>
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          ) : (
+            <View style={styles.emptyState}>
+              <MCIcon name="video-off-outline" size={48} color="#555" />
+              <Text style={styles.emptyStateText}>Aucun modèle trouvé.</Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* BARRE DE NAVIGATION INFÉRIEURE À 5 ONGLETS SÉCURISÉE */}
+      <View style={styles.bottomTabBar}>
+        {[
+          { name: 'content-cut', label: 'Éditer', tab: 'Éditer' },
+          { name: 'play-circle-outline', label: 'Modèles', tab: 'Modèles' },
+          { name: 'auto-fix', label: "Labo d'IA", tab: "Labo d'IA" },
+          { name: 'folder-open-outline', label: 'Projets', tab: 'Projets' },
+          { name: 'account-outline', label: 'Moi', tab: 'Moi' }
+        ].map((item) => (
+          <TouchableOpacity 
+            key={item.label} 
+            style={styles.tabItem} 
+            onPress={() => {
+              setActiveTab(item.tab);
+              if (item.tab === 'Modèles') loadTemplates(activeCategory);
+              if (item.tab === 'Projets') loadUserProjects();
+            }}
+          >
+            <MCIcon 
+              name={item.name} 
+              size={22} 
+              color={activeTab === item.tab ? '#000' : '#8E8E93'} 
+            />
+            <Text style={[styles.tabLabel, activeTab === item.tab && styles.tabLabelActive]} numberOfLines={1}>
+              {item.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* MODAL DU LECTEUR PLEIN ÉCRAN (STYLE TIKTOK) */}
+      <Modal visible={isFullscreenPlayerVisible} animationType="slide" transparent={false}>
+        <View style={styles.fullscreenContainer}>
+          <TouchableOpacity style={styles.closeFullscreenBtn} onPress={() => setIsFullscreenPlayerVisible(false)}>
+            <Icon name="chevron-back" size={28} color="#fff" />
+          </TouchableOpacity>
+
+          <View style={styles.fullscreenVideoPlaceholder}>
+            {selectedTemplateForView?.video_url ? (
+              <Video
+                source={{ uri: selectedTemplateForView.video_url }}
+                style={StyleSheet.absoluteFill}
+                resizeMode="cover"
+                repeat
+                paused={false}
+              />
+            ) : null}
+          </View>
+
+          <View style={styles.rightInteractionBar}>
+            <TouchableOpacity style={styles.interactionIcon} onPress={() => Alert.alert("J'aime ❤️", "Modèle ajouté à vos favoris.")}>
+              <Icon name="heart" size={32} color="#fff" />
+              <Text style={styles.interactionText}>33.6K</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.interactionIcon} onPress={() => Alert.alert("Commentaires 💬", "Espace de discussion CapCut.")}>
+              <Icon name="chatbubble-ellipses" size={32} color="#fff" />
+              <Text style={styles.interactionText}>1.2K</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.interactionIcon} onPress={handleExport}>
+              <Icon name="share-social" size={32} color="#fff" />
+              <Text style={styles.interactionText}>Partager</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.bottomTemplateDetails}>
+            <Text style={styles.fullscreenCreator}>@{selectedTemplateForView ? `creator_${selectedTemplateForView.id.substring(0,5)}` : 'CapCut_User'}</Text>
+            <Text style={styles.fullscreenTitle}>{selectedTemplateForView ? selectedTemplateForView.title : 'Titre du modèle'}</Text>
+            <Text style={styles.fullscreenSpecs}>⏱️ {selectedTemplateForView ? selectedTemplateForView.duration : '0.0'}s  | 🎞️ 1 clip fixe</Text>
+
+            <TouchableOpacity 
+              style={styles.useTemplateBigBtn}
+              onPress={() => {
+                if (selectedTemplateForView) {
+                  handleUseTemplate(selectedTemplateForView);
+                  setIsFullscreenPlayerVisible(false);
+                }
+              }}
+            >
+              <Text style={styles.useTemplateBigBtnText}>Utiliser le modèle</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -702,6 +1216,29 @@ const styles = StyleSheet.create({
   clipText: { color: '#fff', fontSize: 11, fontWeight: '500' },
   hintText: { color: '#A0A0A0', fontSize: 12, textAlign: 'center', marginTop: 10 },
 
+  bottomTabBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 65,
+    backgroundColor: '#ffffff',
+    flexDirection: 'row',
+    borderTopWidth: 1,
+    borderTopColor: '#E5E5EA',
+    paddingBottom: 10,
+    zIndex: 999, // Force l'affichage par-dessus tout le reste
+    justifyContent: 'space-between',
+  },
+  tabItem: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: Dimensions.get('window').width / 5, // Aligne parfaitement les 5 onglets à l'écran
+  },
+  tabLabel: { color: '#8E8E93', fontSize: 11, marginTop: 3 },
+  tabLabelActive: { color: '#fff', fontWeight: '700' },
+
   // ── MODALS ──
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
@@ -718,6 +1255,20 @@ const styles = StyleSheet.create({
   filterActive: { borderColor: '#EAB308', borderWidth: 2 },
   filterCardText: { color: '#FFF', fontSize: 12, fontWeight: '600' },
 
+  // ── FULLSCREEN TEMPLATE PLAYER ──
+  fullscreenContainer: { flex: 1, backgroundColor: '#000' },
+  closeFullscreenBtn: { position: 'absolute', top: 40, left: 15, zIndex: 20, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, padding: 6 },
+  fullscreenVideoPlaceholder: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
+  rightInteractionBar: { position: 'absolute', right: 15, bottom: 240, alignItems: 'center', zIndex: 15 },
+  interactionIcon: { alignItems: 'center', marginBottom: 22 },
+  interactionText: { color: '#fff', fontSize: 11, fontWeight: '600', marginTop: 4, textShadowColor: 'rgba(0,0,0,0.5)', textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 2 },
+  bottomTemplateDetails: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 20, backgroundColor: 'rgba(0,0,0,0.4)', paddingBottom: 35 },
+  fullscreenCreator: { color: '#fff', fontSize: 16, fontWeight: 'bold', marginBottom: 6 },
+  fullscreenTitle: { color: '#E5E5EA', fontSize: 13, marginBottom: 15 },
+  fullscreenSpecs: { color: '#AEAEB2', fontSize: 11, marginBottom: 15 },
+  useTemplateBigBtn: { backgroundColor: '#00F0FF', paddingVertical: 14, borderRadius: 30, alignItems: 'center', justifyContent: 'center' },
+  useTemplateBigBtnText: { color: '#000', fontSize: 15, fontWeight: 'bold' },
+
   // ── TEMPLATES ──
   templateCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#2C2C2E', borderRadius: 10, marginBottom: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#333' },
   templateThumbnail: { width: 90, height: 70, backgroundColor: '#1a1a1a' },
@@ -731,4 +1282,64 @@ const styles = StyleSheet.create({
   emptyState: { alignItems: 'center', paddingVertical: 30 },
   emptyStateText: { color: '#AAA', fontSize: 14, marginTop: 12, fontWeight: '500' },
   emptyStateSubText: { color: '#666', fontSize: 12, marginTop: 6, textAlign: 'center' },
+
+  // ── CLOUD PROJECTS ──
+  projectsContainer: { flex: 1, backgroundColor: '#FFF', paddingTop: 40 },
+  projectsMainTitle: { fontSize: 20, fontWeight: 'bold', color: '#000', paddingHorizontal: 20, marginBottom: 15 },
+  projectsScrollArea: { paddingHorizontal: 15, paddingBottom: 80 },
+  projectCloudCard: { flexDirection: 'row', backgroundColor: '#F2F2F7', padding: 12, borderRadius: 10, alignItems: 'center', marginBottom: 10, justifyContent: 'space-between' },
+  projectIconFrame: { width: 44, height: 44, borderRadius: 8, backgroundColor: '#E6F4FE', alignItems: 'center', justifyContent: 'center' },
+  projectInfoMeta: { flex: 1, marginLeft: 12 },
+  projectTitleText: { fontSize: 14, fontWeight: 'bold', color: '#000' },
+  projectDateText: { fontSize: 11, color: '#8E8E93', marginTop: 3 },
+  projectActionsRow: { flexDirection: 'row', alignItems: 'center' },
+  loadProjectBtn: { backgroundColor: '#007FFF', padding: 8, borderRadius: 6, marginRight: 8 },
+  deleteProjectCloudBtn: { backgroundColor: '#FFF', padding: 8, borderRadius: 6, borderWidth: 1, borderColor: '#E5E5EA' },
+  emptyProjectsState: { alignItems: 'center', marginTop: 100 },
+  emptyProjectsText: { color: '#8E8E93', fontSize: 13, marginTop: 12 },
+  templatesTabContainer: { flex: 1, backgroundColor: '#FFF' },
+  searchBarRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 15, marginBottom: 15, marginTop: 10 },
+  searchField: { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#F2F2F7', borderRadius: 14, paddingHorizontal: 12, paddingVertical: 8, marginRight: 10 },
+  searchInput: { flex: 1, color: '#000', fontSize: 13, paddingVertical: 0 },
+  autoCutBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#E5E7EB', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 14 },
+  autoCutText: { marginLeft: 8, color: '#000', fontSize: 12, fontWeight: 'bold' },
+
+  // ── LABO D'IA ──
+  aiContainer: { flex: 1, backgroundColor: '#FFF', paddingTop: 40 },
+  aiMainTitle: { fontSize: 20, fontWeight: 'bold', color: '#000', paddingHorizontal: 20, marginBottom: 15 },
+  aiHeroBanner: { backgroundColor: '#7C3AED', marginHorizontal: 15, padding: 18, borderRadius: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 15 },
+  aiHeroTextFrame: { flex: 1, marginRight: 10 },
+  aiHeroTitle: { fontSize: 16, fontWeight: 'bold', color: '#FFF' },
+  aiHeroSubtitle: { fontSize: 11, color: '#DDD', marginTop: 4, lineHeight: 16 },
+  aiHeroIconFrame: { width: 54, height: 54, borderRadius: 27, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
+  aiPromptCard: { backgroundColor: '#F2F2F7', marginHorizontal: 15, padding: 12, borderRadius: 12, marginBottom: 20 },
+  aiTextInput: { minHeight: 60, color: '#000', fontSize: 13, textAlignVertical: 'top', padding: 0, marginBottom: 10 },
+  aiGenerateBtn: { backgroundColor: '#00F0FF', height: 36, borderRadius: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', alignSelf: 'flex-end', paddingHorizontal: 20 },
+  aiGenerateBtnText: { color: '#000', fontSize: 13, fontWeight: 'bold' },
+  aiSectionTitle: { fontSize: 14, fontWeight: 'bold', color: '#000', paddingHorizontal: 20, marginBottom: 12 },
+  aiToolsGrid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 11, justifyContent: 'space-between' },
+  aiToolGridCard: { width: (Dimensions.get('window').width - 32) / 2, backgroundColor: '#F2F2F7', padding: 16, borderRadius: 10, alignItems: 'center', marginBottom: 10 },
+  aiToolGridLabel: { color: '#000', fontSize: 12, fontWeight: '600', marginTop: 8 },
+
+  // ── PROFIL UTILISATEUR ──
+  profileContainer: { flex: 1, backgroundColor: '#FFF', paddingTop: 30 },
+  profileHeader: { flexDirection: 'row', paddingHorizontal: 20, alignItems: 'center', marginVertical: 20 },
+  profileAvatarLarge: { width: 70, height: 70, borderRadius: 35, backgroundColor: '#1C1C1E', justifyContent: 'center', alignItems: 'center' },
+  avatarLargeText: { color: '#FFF', fontSize: 28, fontWeight: 'bold' },
+  profileMeta: { marginLeft: 15 },
+  profileUsername: { fontSize: 18, fontWeight: 'bold', color: '#000' },
+  profileId: { fontSize: 12, color: '#8E8E93', marginTop: 4 },
+  statsCounterRow: { flexDirection: 'row', paddingHorizontal: 20, justifyContent: 'space-around', alignItems: 'center', marginVertical: 15 },
+  statBox: { alignItems: 'center', flex: 1 },
+  statCountNumber: { fontSize: 16, fontWeight: 'bold', color: '#000' },
+  statCountLabel: { fontSize: 11, color: '#8E8E93', marginTop: 2 },
+  statDivider: { width: 1, height: 20, backgroundColor: '#E5E5EA' },
+  profileContentTabs: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#E5E5EA', marginTop: 15 },
+  profileSubTab: { paddingVertical: 12, paddingHorizontal: 20 },
+  draftsScrollArea: { padding: 15 },
+  draftCard: { backgroundColor: '#F2F2F7', padding: 15, borderRadius: 8, flexDirection: 'row', alignItems: 'center', position: 'relative' },
+  draftCardText: { marginLeft: 10, fontSize: 13, color: '#000', fontWeight: '500' },
+  draftCardDuration: { position: 'absolute', right: 15, color: '#8E8E93', fontSize: 12 },
+  emptyDraftsState: { alignItems: 'center', marginTop: 60 },
+  emptyDraftsText: { color: '#8E8E93', fontSize: 13, marginTop: 10 },
 });
